@@ -98,30 +98,36 @@ export default function Home() {
     let finalSourceUrl = sourceUrl;
 
     try {
-      let res: Response;
-
+      // Step 0: Upload file if dropped (Bridge Pattern)
       if (droppedFile) {
-        // Direct A2A File Transfer: Send file as part of FormData
-        const formData = new FormData();
-        formData.append("file", droppedFile);
-        formData.append("question", question);
-        formData.append("useWebSearch", String(useWebSearch));
-        if (sourceUrl && sourceUrl !== droppedFile.name) {
-          formData.append("sourceUrl", sourceUrl);
+        setSteps([{ step: "upload", status: "started", message: "📤 Preparing local file for A2A ingestion..." }]);
+        
+        try {
+          const formData = new FormData();
+          formData.append("file", droppedFile);
+          
+          const uploadRes = await fetch("/api/upload", {
+            method: "POST",
+            body: formData,
+          });
+          
+          const uploadData = await uploadRes.json();
+          if (!uploadData.success) throw new Error(uploadData.error || "Upload failed");
+          
+          finalSourceUrl = uploadData.link;
+          setSteps([{ step: "upload", status: "done", message: `✅ File ready: ${droppedFile.name}` }]);
+        } catch (e) {
+          setSteps([{ step: "upload", status: "error", message: "❌ Failed to prepare file for remote agent." }]);
+          setRunning(false);
+          return;
         }
-
-        res = await fetch("/api/agent", {
-          method: "POST",
-          body: formData,
-        });
-      } else {
-        // Normal URL ingestion
-        res = await fetch("/api/agent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sourceUrl, question, useWebSearch }),
-        });
       }
+
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceUrl: finalSourceUrl, question, useWebSearch }),
+      });
 
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();

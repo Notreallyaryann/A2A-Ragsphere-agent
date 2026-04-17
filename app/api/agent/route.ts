@@ -11,44 +11,24 @@ const RAGSPHERE_KEY = process.env.RAGSPHERE_API_KEY!;
 
 // ── RagSphere helpers ──────────────────────────────────────────────────────────
 
-async function ingestDocument(sourceUrl?: string, file?: File) {
-  // If no file, use the original JSON method which was verified to work
-  if (!file && sourceUrl) {
-    const res = await fetch(RAGSPHERE_BASE, {
-      method: "POST",
-      headers: {
-        "x-a2a-key": RAGSPHERE_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ skill: "ingest", input: { source_url: sourceUrl } }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || "Ingest failed");
-    return data.output as { documentId: string; fileName: string; chunks: number; source: string };
-  }
-
-  // If local file, use FormData with flat structure
-  const formData = new FormData();
-  formData.append("skill", "ingest");
-  
-  // Standard A2A often wraps input in a JSON string field for multipart
-  const input = { source_url: sourceUrl || file?.name };
-  formData.append("input", JSON.stringify(input));
-  
-  if (file) {
-    formData.append("file", file);
-  }
-
+async function ingestDocument(sourceUrl: string) {
   const res = await fetch(RAGSPHERE_BASE, {
     method: "POST",
     headers: {
       "x-a2a-key": RAGSPHERE_KEY,
+      "Content-Type": "application/json",
     },
-    body: formData,
+    body: JSON.stringify({ 
+      skill: "ingest", 
+      input: { source_url: sourceUrl } 
+    }),
   });
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.message || `Ingest failed with status ${res.status}`);
+  if (!res.ok) {
+    console.error("RagSphere API Error:", data);
+    throw new Error(data.message || `Ingest failed (${res.status})`);
+  }
   return data.output as { documentId: string; fileName: string; chunks: number; source: string };
 }
 
@@ -117,28 +97,10 @@ function createSSE(controller: ReadableStreamDefaultController, data: object) {
 
 
 export async function POST(req: NextRequest) {
-  let sourceUrl: string | undefined;
-  let question: string;
-  let useWebSearch = false;
-  let file: File | undefined;
+  const { sourceUrl, question, useWebSearch } = await req.json();
 
-  const contentType = req.headers.get("content-type") || "";
-  
-  if (contentType.includes("multipart/form-data")) {
-    const formData = await req.formData();
-    sourceUrl = (formData.get("sourceUrl") as string) || undefined;
-    question = formData.get("question") as string;
-    useWebSearch = formData.get("useWebSearch") === "true";
-    file = (formData.get("file") as File) || undefined;
-  } else {
-    const body = await req.json();
-    sourceUrl = body.sourceUrl;
-    question = body.question;
-    useWebSearch = body.useWebSearch;
-  }
-
-  if ((!sourceUrl && !file) || !question) {
-    return NextResponse.json({ error: "Source (URL or File) and question are required" }, { status: 400 });
+  if (!sourceUrl || !question) {
+    return NextResponse.json({ error: "sourceUrl and question are required" }, { status: 400 });
   }
 
   const stream = new ReadableStream({
@@ -152,11 +114,11 @@ export async function POST(req: NextRequest) {
 
       try {
         // Step 1: Ingest
-        createSSE(controller, { step: "ingest", status: "started", message: file ? `📥 Ingesting local file "${file.name}"...` : "📥 Ingesting document via RagSphere A2A..." });
+        createSSE(controller, { step: "ingest", status: "started", message: "📥 Ingesting document via RagSphere A2A..." });
 
         let docMeta: { documentId: string; fileName: string; chunks: number; source: string };
         try {
-          docMeta = await ingestDocument(sourceUrl, file);
+          docMeta = await ingestDocument(sourceUrl);
           createSSE(controller, {
             step: "ingest",
             status: "done",
