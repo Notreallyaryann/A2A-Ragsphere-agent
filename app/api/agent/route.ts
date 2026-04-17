@@ -12,13 +12,29 @@ const RAGSPHERE_KEY = process.env.RAGSPHERE_API_KEY!;
 // ── RagSphere helpers ──────────────────────────────────────────────────────────
 
 async function ingestDocument(sourceUrl?: string, file?: File) {
+  // If no file, use the original JSON method which was verified to work
+  if (!file && sourceUrl) {
+    const res = await fetch(RAGSPHERE_BASE, {
+      method: "POST",
+      headers: {
+        "x-a2a-key": RAGSPHERE_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ skill: "ingest", input: { source_url: sourceUrl } }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Ingest failed");
+    return data.output as { documentId: string; fileName: string; chunks: number; source: string };
+  }
+
+  // If local file, use FormData with flat structure
   const formData = new FormData();
   formData.append("skill", "ingest");
   
-  const input: Record<string, any> = {};
-  if (sourceUrl) input.source_url = sourceUrl;
-  
+  // Standard A2A often wraps input in a JSON string field for multipart
+  const input = { source_url: sourceUrl || file?.name };
   formData.append("input", JSON.stringify(input));
+  
   if (file) {
     formData.append("file", file);
   }
@@ -27,14 +43,12 @@ async function ingestDocument(sourceUrl?: string, file?: File) {
     method: "POST",
     headers: {
       "x-a2a-key": RAGSPHERE_KEY,
-      // Note: Don't set Content-Type header manually when sending FormData, 
-      // the browser/node will set it with the correct boundary
     },
     body: formData,
   });
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.message || "Ingest failed");
+  if (!res.ok) throw new Error(data.message || `Ingest failed with status ${res.status}`);
   return data.output as { documentId: string; fileName: string; chunks: number; source: string };
 }
 
@@ -129,6 +143,13 @@ export async function POST(req: NextRequest) {
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Render/Vercel Heartbeat interval
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(new TextEncoder().encode(": keep-alive heartbeat\n\n"));
+        } catch (e) {}
+      }, 15000);
+
       try {
         // Step 1: Ingest
         createSSE(controller, { step: "ingest", status: "started", message: file ? `📥 Ingesting local file "${file.name}"...` : "📥 Ingesting document via RagSphere A2A..." });
@@ -144,6 +165,7 @@ export async function POST(req: NextRequest) {
           });
         } catch (e: unknown) {
           createSSE(controller, { step: "ingest", status: "error", message: `❌ Ingest failed: ${(e as Error).message}` });
+          clearInterval(heartbeat);
           controller.close();
           return;
         }
@@ -157,6 +179,7 @@ export async function POST(req: NextRequest) {
           createSSE(controller, { step: "query", status: "done", message: "✅ Retrieved relevant context from document", data: { ragAnswer } });
         } catch (e: unknown) {
           createSSE(controller, { step: "query", status: "error", message: `❌ Query failed: ${(e as Error).message}` });
+          clearInterval(heartbeat);
           controller.close();
           return;
         }
@@ -170,14 +193,17 @@ export async function POST(req: NextRequest) {
           createSSE(controller, { step: "cerebras", status: "done", message: "✅ Answer synthesized", data: { finalAnswer } });
         } catch (e: unknown) {
           createSSE(controller, { step: "cerebras", status: "error", message: `❌ Cerebras failed: ${(e as Error).message}` });
+          clearInterval(heartbeat);
           controller.close();
           return;
         }
 
         createSSE(controller, { step: "complete", status: "done", message: "🎉 Pipeline complete" });
+        clearInterval(heartbeat);
         controller.close();
       } catch (e: unknown) {
         createSSE(controller, { step: "error", status: "error", message: (e as Error).message });
+        clearInterval(heartbeat);
         controller.close();
       }
     },
