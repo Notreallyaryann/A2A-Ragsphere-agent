@@ -14,12 +14,11 @@ const RAGSPHERE_KEY = process.env.RAGSPHERE_API_KEY!;
 async function ingestDocument(sourceUrl?: string, file?: File) {
   const formData = new FormData();
   formData.append("skill", "ingest");
-  
-  const input: any = {};
+
+  const input: Record<string, any> = {};
   if (sourceUrl) input.source_url = sourceUrl;
-  
+
   formData.append("input", JSON.stringify(input));
-  
   if (file) {
     formData.append("file", file);
   }
@@ -28,15 +27,13 @@ async function ingestDocument(sourceUrl?: string, file?: File) {
     method: "POST",
     headers: {
       "x-a2a-key": RAGSPHERE_KEY,
+
     },
     body: formData,
   });
 
   const data = await res.json();
-  if (!res.ok) {
-    console.error("RagSphere API Error:", data);
-    throw new Error(data.message || `Ingest failed with status ${res.status}`);
-  }
+  if (!res.ok) throw new Error(data.message || "Ingest failed");
   return data.output as { documentId: string; fileName: string; chunks: number; source: string };
 }
 
@@ -111,7 +108,7 @@ export async function POST(req: NextRequest) {
   let file: File | undefined;
 
   const contentType = req.headers.get("content-type") || "";
-  
+
   if (contentType.includes("multipart/form-data")) {
     const formData = await req.formData();
     sourceUrl = (formData.get("sourceUrl") as string) || undefined;
@@ -131,16 +128,9 @@ export async function POST(req: NextRequest) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      // Render/Vercel Heartbeat interval
-      const heartbeat = setInterval(() => {
-        try {
-          controller.enqueue(new TextEncoder().encode(": keep-alive heartbeat\n\n"));
-        } catch (e) {}
-      }, 15000);
-
       try {
         // Step 1: Ingest
-        createSSE(controller, { step: "ingest", status: "started", message: file ? "📥 Uploading binary to remote agent..." : "📥 Ingesting document via RagSphere A2A..." });
+        createSSE(controller, { step: "ingest", status: "started", message: file ? `📥 Ingesting local file "${file.name}"...` : "📥 Ingesting document via RagSphere A2A..." });
 
         let docMeta: { documentId: string; fileName: string; chunks: number; source: string };
         try {
@@ -153,7 +143,6 @@ export async function POST(req: NextRequest) {
           });
         } catch (e: unknown) {
           createSSE(controller, { step: "ingest", status: "error", message: `❌ Ingest failed: ${(e as Error).message}` });
-          clearInterval(heartbeat);
           controller.close();
           return;
         }
@@ -167,7 +156,6 @@ export async function POST(req: NextRequest) {
           createSSE(controller, { step: "query", status: "done", message: "✅ Retrieved relevant context from document", data: { ragAnswer } });
         } catch (e: unknown) {
           createSSE(controller, { step: "query", status: "error", message: `❌ Query failed: ${(e as Error).message}` });
-          clearInterval(heartbeat);
           controller.close();
           return;
         }
@@ -181,17 +169,14 @@ export async function POST(req: NextRequest) {
           createSSE(controller, { step: "cerebras", status: "done", message: "✅ Answer synthesized", data: { finalAnswer } });
         } catch (e: unknown) {
           createSSE(controller, { step: "cerebras", status: "error", message: `❌ Cerebras failed: ${(e as Error).message}` });
-          clearInterval(heartbeat);
           controller.close();
           return;
         }
 
         createSSE(controller, { step: "complete", status: "done", message: "🎉 Pipeline complete" });
-        clearInterval(heartbeat);
         controller.close();
       } catch (e: unknown) {
         createSSE(controller, { step: "error", status: "error", message: (e as Error).message });
-        clearInterval(heartbeat);
         controller.close();
       }
     },
