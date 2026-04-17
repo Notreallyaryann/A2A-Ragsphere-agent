@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import Cerebras from "@cerebras/cerebras_cloud_sdk";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
 
 const cerebras = new Cerebras({
   apiKey: process.env.CEREBRAS_API_KEY!,
@@ -7,48 +10,24 @@ const cerebras = new Cerebras({
 
 const RAGSPHERE_BASE = "https://ragsphere.vercel.app/api/a2a/tasks";
 const RAGSPHERE_KEY = process.env.RAGSPHERE_API_KEY!;
+// Use the Render URL if available, fallback to localhost for local testing
+const APP_URL = process.env.PUBLIC_APP_URL || "https://a2a-ragsphere-agent.onrender.com";
 
 
 // ── RagSphere helpers ──────────────────────────────────────────────────────────
 
-async function ingestDocument(sourceUrl?: string, file?: File) {
-  // Case 1: Pure URL ingestion (Matches .well-known "text/plain" / JSON)
-  if (!file && sourceUrl) {
-    const res = await fetch(RAGSPHERE_BASE, {
-      method: "POST",
-      headers: {
-        "x-a2a-key": RAGSPHERE_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ 
-        skill: "ingest", 
-        input: { source_url: sourceUrl } 
-      }),
-    });
-
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || `Ingest failed (${res.status})`);
-    return data.output as { documentId: string; fileName: string; chunks: number; source: string };
-  }
-
-  // Case 2: Binary File Handoff (A2A Multipart)
-  const formData = new FormData();
-  formData.append("skill", "ingest");
-  
-  const input: Record<string, any> = {};
-  input.source_url = sourceUrl || file?.name;
-  formData.append("input", JSON.stringify(input));
-  
-  if (file) {
-    formData.append("file", file);
-  }
-
+async function ingestDocument(sourceUrl: string) {
+  // Pure JSON ingestion (Matches .well-known "text/plain" / JSON)
   const res = await fetch(RAGSPHERE_BASE, {
     method: "POST",
     headers: {
       "x-a2a-key": RAGSPHERE_KEY,
+      "Content-Type": "application/json",
     },
-    body: formData,
+    body: JSON.stringify({ 
+      skill: "ingest", 
+      input: { source_url: sourceUrl } 
+    }),
   });
 
   const data = await res.json();
@@ -148,12 +127,31 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
+        // Step 0: Self-Host File if binary (Bridge Pattern - Pure A2A)
+        let finalSourceUrl = sourceUrl;
+        if (file) {
+          createSSE(controller, { step: "host", status: "started", message: "💿 Hosting local file for A2A transfer..." });
+          try {
+            const fileName = `${crypto.randomUUID()}-${file.name.replace(/\s+/g, "_")}`;
+            const filePath = path.join("/tmp", fileName);
+            const buffer = Buffer.from(await file.arrayBuffer());
+            fs.writeFileSync(filePath, buffer);
+            
+            finalSourceUrl = `${APP_URL}/api/files/${fileName}`;
+            createSSE(controller, { step: "host", status: "done", message: "✅ File hosted successfully" });
+          } catch (e: any) {
+            createSSE(controller, { step: "host", status: "error", message: `❌ Hosting failed: ${e.message}` });
+            controller.close();
+            return;
+          }
+        }
+
         // Step 1: Ingest
-        createSSE(controller, { step: "ingest", status: "started", message: file ? `📥 Ingesting local file "${file.name}"...` : "📥 Ingesting document via RagSphere A2A..." });
+        createSSE(controller, { step: "ingest", status: "started", message: "📥 Ingesting document via RagSphere A2A..." });
 
         let docMeta: { documentId: string; fileName: string; chunks: number; source: string };
         try {
-          docMeta = await ingestDocument(sourceUrl, file);
+          docMeta = await ingestDocument(finalSourceUrl!);
           createSSE(controller, {
             step: "ingest",
             status: "done",

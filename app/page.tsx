@@ -170,6 +170,7 @@ export default function Home() {
   }
 
   const stepIcons: Record<string, string> = {
+    host: "💿",
     ingest: "📥",
     query: "🔍",
     cerebras: "🧠",
@@ -178,6 +179,7 @@ export default function Home() {
   };
 
   const stepLabels: Record<string, string> = {
+    host: "A2A Self-Hosting",
     ingest: "RagSphere Ingest",
     query: "RAG Query",
     cerebras: "Cerebras Synthesis",
