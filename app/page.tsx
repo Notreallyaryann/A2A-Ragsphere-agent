@@ -98,36 +98,30 @@ export default function Home() {
     let finalSourceUrl = sourceUrl;
 
     try {
-      // Step 0: Upload file if dropped (Bridge Pattern)
-      if (droppedFile) {
-        setSteps([{ step: "upload", status: "started", message: "📤 Preparing local file for A2A ingestion..." }]);
-        
-        try {
-          const formData = new FormData();
-          formData.append("file", droppedFile);
-          
-          const uploadRes = await fetch("/api/upload", {
-            method: "POST",
-            body: formData,
-          });
-          
-          const uploadData = await uploadRes.json();
-          if (!uploadData.success) throw new Error(uploadData.error || "Upload failed");
-          
-          finalSourceUrl = uploadData.link;
-          setSteps([{ step: "upload", status: "done", message: `✅ File ready: ${droppedFile.name}` }]);
-        } catch (e) {
-          setSteps([{ step: "upload", status: "error", message: "❌ Failed to prepare file for remote agent." }]);
-          setRunning(false);
-          return;
-        }
-      }
+      let res: Response;
 
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceUrl: finalSourceUrl, question, useWebSearch }),
-      });
+      if (droppedFile) {
+        // Direct A2A Binary Transfer
+        const formData = new FormData();
+        formData.append("file", droppedFile);
+        formData.append("question", question);
+        formData.append("useWebSearch", String(useWebSearch));
+        if (sourceUrl && sourceUrl !== droppedFile.name) {
+          formData.append("sourceUrl", sourceUrl);
+        }
+
+        res = await fetch("/api/agent", {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        // Standard JSON Request
+        res = await fetch("/api/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sourceUrl, question, useWebSearch }),
+        });
+      }
 
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
@@ -176,7 +170,6 @@ export default function Home() {
   }
 
   const stepIcons: Record<string, string> = {
-    upload: "📤",
     ingest: "📥",
     query: "🔍",
     cerebras: "🧠",
@@ -185,7 +178,6 @@ export default function Home() {
   };
 
   const stepLabels: Record<string, string> = {
-    upload: "Local File Upload",
     ingest: "RagSphere Ingest",
     query: "RAG Query",
     cerebras: "Cerebras Synthesis",

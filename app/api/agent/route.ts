@@ -11,23 +11,31 @@ const RAGSPHERE_KEY = process.env.RAGSPHERE_API_KEY!;
 
 // ── RagSphere helpers ──────────────────────────────────────────────────────────
 
-async function ingestDocument(sourceUrl: string) {
+async function ingestDocument(sourceUrl?: string, file?: File) {
+  const formData = new FormData();
+  formData.append("skill", "ingest");
+  
+  const input: any = {};
+  if (sourceUrl) input.source_url = sourceUrl;
+  
+  formData.append("input", JSON.stringify(input));
+  
+  if (file) {
+    formData.append("file", file);
+  }
+
   const res = await fetch(RAGSPHERE_BASE, {
     method: "POST",
     headers: {
       "x-a2a-key": RAGSPHERE_KEY,
-      "Content-Type": "application/json",
     },
-    body: JSON.stringify({ 
-      skill: "ingest", 
-      input: { source_url: sourceUrl } 
-    }),
+    body: formData,
   });
 
   const data = await res.json();
   if (!res.ok) {
     console.error("RagSphere API Error:", data);
-    throw new Error(data.message || `Ingest failed (${res.status})`);
+    throw new Error(data.message || `Ingest failed with status ${res.status}`);
   }
   return data.output as { documentId: string; fileName: string; chunks: number; source: string };
 }
@@ -97,10 +105,28 @@ function createSSE(controller: ReadableStreamDefaultController, data: object) {
 
 
 export async function POST(req: NextRequest) {
-  const { sourceUrl, question, useWebSearch } = await req.json();
+  let sourceUrl: string | undefined;
+  let question: string;
+  let useWebSearch = false;
+  let file: File | undefined;
 
-  if (!sourceUrl || !question) {
-    return NextResponse.json({ error: "sourceUrl and question are required" }, { status: 400 });
+  const contentType = req.headers.get("content-type") || "";
+  
+  if (contentType.includes("multipart/form-data")) {
+    const formData = await req.formData();
+    sourceUrl = (formData.get("sourceUrl") as string) || undefined;
+    question = formData.get("question") as string;
+    useWebSearch = formData.get("useWebSearch") === "true";
+    file = (formData.get("file") as File) || undefined;
+  } else {
+    const body = await req.json();
+    sourceUrl = body.sourceUrl;
+    question = body.question;
+    useWebSearch = body.useWebSearch;
+  }
+
+  if ((!sourceUrl && !file) || !question) {
+    return NextResponse.json({ error: "Source (URL or File) and question are required" }, { status: 400 });
   }
 
   const stream = new ReadableStream({
@@ -114,11 +140,11 @@ export async function POST(req: NextRequest) {
 
       try {
         // Step 1: Ingest
-        createSSE(controller, { step: "ingest", status: "started", message: "📥 Ingesting document via RagSphere A2A..." });
+        createSSE(controller, { step: "ingest", status: "started", message: file ? "📥 Uploading binary to remote agent..." : "📥 Ingesting document via RagSphere A2A..." });
 
         let docMeta: { documentId: string; fileName: string; chunks: number; source: string };
         try {
-          docMeta = await ingestDocument(sourceUrl);
+          docMeta = await ingestDocument(sourceUrl, file);
           createSSE(controller, {
             step: "ingest",
             status: "done",
