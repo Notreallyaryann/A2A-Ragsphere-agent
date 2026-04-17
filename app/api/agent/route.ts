@@ -12,13 +12,33 @@ const RAGSPHERE_KEY = process.env.RAGSPHERE_API_KEY!;
 // ── RagSphere helpers ──────────────────────────────────────────────────────────
 
 async function ingestDocument(sourceUrl?: string, file?: File) {
+  // Case 1: Pure URL ingestion (Matches .well-known "text/plain" / JSON)
+  if (!file && sourceUrl) {
+    const res = await fetch(RAGSPHERE_BASE, {
+      method: "POST",
+      headers: {
+        "x-a2a-key": RAGSPHERE_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ 
+        skill: "ingest", 
+        input: { source_url: sourceUrl } 
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || `Ingest failed (${res.status})`);
+    return data.output as { documentId: string; fileName: string; chunks: number; source: string };
+  }
+
+  // Case 2: Binary File Handoff (A2A Multipart)
   const formData = new FormData();
   formData.append("skill", "ingest");
-
+  
   const input: Record<string, any> = {};
-  if (sourceUrl) input.source_url = sourceUrl;
-
+  input.source_url = sourceUrl || file?.name;
   formData.append("input", JSON.stringify(input));
+  
   if (file) {
     formData.append("file", file);
   }
@@ -27,13 +47,12 @@ async function ingestDocument(sourceUrl?: string, file?: File) {
     method: "POST",
     headers: {
       "x-a2a-key": RAGSPHERE_KEY,
-
     },
     body: formData,
   });
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.message || "Ingest failed");
+  if (!res.ok) throw new Error(data.message || `Ingest failed (${res.status})`);
   return data.output as { documentId: string; fileName: string; chunks: number; source: string };
 }
 
